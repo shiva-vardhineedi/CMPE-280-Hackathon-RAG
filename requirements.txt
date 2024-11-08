@@ -12,3 +12,4 @@ sentence-transformers
 langchain_groq
 flask
 flask-cors
+langchain-huggingface

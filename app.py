@@ -56,66 +56,86 @@ def duckduckgo_search(query):
         logger.warning("No relevant results found from DuckDuckGo.")
         return "No relevant results found from DuckDuckGo."
 
+# Function to determine whether the query is relevant to the knowledge base
+def is_relevant_query(query):
+    # List of keywords related to the data we have in FAISS (e.g., agriculture, food security, nutrition, FDI, GDP, etc.)
+    relevant_keywords = [
+        "agriculture", "food security", "nutrition", "hunger", "malnutrition", 
+        "rice production", "fertilizer", "fishing", "food consumption", 
+        "food affordability", "farming", "urban agriculture", "food systems", "FAO",
+        "foreign direct investment", "FDI", "current account balance", "GDP", "economic growth", "debt"
+    ]
+    
+    # Check if any relevant keyword appears in the query (case-insensitive match)
+    for keyword in relevant_keywords:
+        if keyword.lower() in query.lower():
+            return True
+    return False
+
 # Function to query the system with simplified context management
+# Function to query the system with enhanced context-handling strategies
 def query_system(query):
     logger.info(f"Received query: {query}")
 
-    # Retrieve relevant context using the FAISS retriever
-    relevant_texts = retriever.get_relevant_documents(query)
+    # Determine if the query is relevant to the available context
+    if is_relevant_query(query):
+        # Retrieve relevant context using the FAISS retriever
+        logger.info("Query is relevant to knowledge base. Retrieving context from FAISS...")
+        relevant_texts = retriever.get_relevant_documents(query)
+        
+        # Limit the number of relevant chunks to reduce context size
+        MAX_CHUNKS = 5
+        if len(relevant_texts) > MAX_CHUNKS:
+            logger.info(f"Retrieved {len(relevant_texts)} chunks. Limiting to {MAX_CHUNKS} most relevant chunks.")
+            relevant_texts = relevant_texts[:MAX_CHUNKS]  # Keep only the top 5 relevant chunks
 
-    # Limit the number of relevant chunks to reduce context size
-    MAX_CHUNKS = 5
-    if len(relevant_texts) > MAX_CHUNKS:
-        logger.info(f"Retrieved {len(relevant_texts)} chunks. Limiting to {MAX_CHUNKS} most relevant chunks.")
-        relevant_texts = relevant_texts[:MAX_CHUNKS]  # Keep only the top 5 relevant chunks
+        # Combine the selected chunks into a single context
+        context = "\n".join([text.page_content for text in relevant_texts])
 
-    # Combine the selected chunks into a single context
-    context = "\n".join([text.page_content for text in relevant_texts])
+        # If the combined context is still too long, truncate or summarize
+        MAX_CONTEXT_LENGTH = 2000
+        if len(context) > MAX_CONTEXT_LENGTH:
+            logger.info(f"Context size ({len(context)}) exceeds {MAX_CONTEXT_LENGTH} characters. Truncating context.")
+            context = context[:MAX_CONTEXT_LENGTH] + "... [truncated]"
 
-    # If the combined context is still too long, truncate or summarize
-    MAX_CONTEXT_LENGTH = 2000
-    if len(context) > MAX_CONTEXT_LENGTH:
-        logger.info(f"Context size ({len(context)}) exceeds {MAX_CONTEXT_LENGTH} characters. Truncating context.")
-        context = context[:MAX_CONTEXT_LENGTH] + "... [truncated]"
-
-    # If context is still too small or unavailable, fall back to DuckDuckGo
-    if len(context.strip()) == 0:
-        logger.warning("No relevant information found in FAISS index.")
-        search_results = duckduckgo_search(query)
-        context = "No relevant internal data was found. Here are some web search results:\n" + search_results
-        source_info = "Note: The information provided below is based on a DuckDuckGo web search."
-    else:
-        logger.info("Using information retrieved from the FAISS index.")
+        # Prepare the source information to guide the response
         source_info = "Note: The following information was retrieved internally from the FAISS index."
+    
+    else:
+        # If the query is irrelevant to the internal knowledge base, no context is added
+        logger.info("Query is not related to the knowledge base. Proceeding without FAISS context.")
+        context = ""
+        source_info = "Note: The following information is generated based on general knowledge."
 
     # Prepare the messages for ChatGroq invocation with updated prompt for styled and concise responses
     messages = [
-        (
-            "system",
-            "You are a helpful assistant that provides answers in a well-structured, styled format. "
-            "Use bullet points, lists, or sections to make the response easy to read. Keep your response concise, "
-            "Keep the output tokens as low as possible, and only provide the most critical information needed to answer the user's question. "
-            "Avoid excessive details, and focus on clarity and brevity.\n\n"
-            "Context:\n"
-            f"{context}\n\n"
-            f"{source_info} Please clearly indicate if any part of the answer is based on external web searches."
+    (
+        "system",
+        "You are a helpful assistant that provides answers in a well-structured, styled format. "
+        "Use bullet points, lists, or sections to make the response easy to read. Keep your response concise, "
+        "use context only if it's directly relevant, and only provide the most critical information needed to answer the user's question. "
+        "While responding, don't explain too much unless the user specifically asks for more details. Keep your answers to the point."
+        "\n\nContext (if applicable):\n{context}\n\n"
+        "Note: The following information was retrieved from your data. Please clearly indicate if any part of the answer is based on external data."
         ),
         ("user", query)
     ]
+
 
     # Invoke the model with the provided messages
     logger.info("Invoking the ChatGroq model with the provided context and query...")
     response = llm.invoke(messages)
 
     # Print debug information about the type of data source used
-    if "DuckDuckGo" in source_info:
-        logger.info("The answer is based on a DuckDuckGo web search.")
-    else:
+    if "FAISS index" in source_info:
         logger.info("The answer is based on information retrieved from the FAISS index.")
+    else:
+        logger.info("The answer is based on general knowledge.")
     
     pp(response.content)  # Pretty print the final response for better debugging
 
     return response.content
+
 
 # Flask endpoint for handling chat queries
 @app.route('/chat', methods=['POST'])
